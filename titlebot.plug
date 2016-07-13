@@ -1,0 +1,12 @@
+[Core]
+module = titlebot
+name = titlebot
+
+[Documentation]
+description = I help you to do open polls (target platform is slack but should work for others, too)
+
+[Python]
+version = 3
+
+[Errbot]
+
