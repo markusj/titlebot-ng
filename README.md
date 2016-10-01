@@ -25,7 +25,7 @@ For details, see !command -h
  * *!revoke* - usage: revoke [-h] [-c CHANNEL] [user]
  * *!enable* - usage: enable [-h] [-c CHANNEL]
  * *!disable* - usage: disable [-h] [-c CHANNEL]
- * *!countdown* - usage: countdown [-h] [-disable] [-c CHANNEL] [delay]
+ * *!countdown* - usage: countdown [-h] [--disable] [--list] [-c CHANNEL] [delay]
  * *!reset* - usage: reset [-h] [-c CHANNEL]
  * *!list* - usage: list [-h] [--public] [-c CHANNEL] [list_mode]
  * *!tb channel* - usage: tb_channel [-h] [-c CHANNEL] operation
