@@ -2,6 +2,8 @@ from errbot import BotPlugin, botcmd, arg_botcmd, webhook
 from errbot.backends.base import RoomDoesNotExistError, UserDoesNotExistError
 
 import logging
+import math
+import time
 
 
 log = logging.getLogger(__name__)
@@ -43,12 +45,12 @@ class ChanConfig:
 
 
 class ChanInfo:
-    # mod           titlebot
     # channel       Room
     # admins        list of string
     # options       list of VotingOption
     # userVotes     list of UserVote
     # enabled       boolean
+    # countdownTS   integer/float
 
     def __init__(self, chan, adminList):
         self.channel = chan
@@ -56,12 +58,14 @@ class ChanInfo:
         self.options = [ ]
         self.userVotes = [ ]
         self.enabled = False
+        self.countdownTS = -1
 
 
     def reset(self):
         self.options.clear()
         self.userVotes.clear()
         self.enabled = False
+        self.countdownTS = -1
 
 
     # user: Person
@@ -161,11 +165,19 @@ class Titlebot(BotPlugin):
     """
     
     # chans         list of ChanInfo
+    # cbChan        list of ChanInfo
+    # polling       bool
     
-    def __init__(self, bot):        
-        self.chans = [ ]
-        
+    def __init__(self, bot):
         super().__init__(bot)
+        
+        self.resetState()
+    
+    
+    def resetState(self):
+        self.chans = [ ]
+        self.cbChan = [ ]
+        self.polling = False
     
     
     # msg: Message, errStr: String
@@ -412,7 +424,7 @@ class Titlebot(BotPlugin):
 
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
     def disable(self, msg, channel):
-        """disable/pause voting. It might be continued later (admin only command)"""
+        """disable/pause voting. It might be continued later. Also resets the countdown timer, if running (admin only command)"""
         
         try:
             room, chan = self.parseParams(msg, channel)
@@ -421,13 +433,160 @@ class Titlebot(BotPlugin):
         
         if not self.testAdmin(msg.frm, chan):
             return
-            
+        
         if chan.enabled:
             self.send(room, "----- Voting has been DISABLED! -----")
+            self.resetCountdown(chan)
         else:
             self.send(msg.frm, "Voting was already " + "enabled" if chan.enabled else "disabled")
             
         chan.enabled = False
+
+
+    @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
+    @arg_botcmd('--disable', '-d', action='store_true', help='disables a running countdown')
+    @arg_botcmd('delay', nargs='?', type=int, default='60', help='countdown delay (in seconds). Negative values have the same effect as --disable. A value of zero ends the voting immediately. default=60sec')
+    def countdown(self, msg, channel, disable, delay):
+        """start/stop a countdown to end the voting. Might be called again to change the counter value (admin only command)"""
+        
+        try:
+            room, chan = self.parseParams(msg, channel)
+        except ValueError as e:
+            return
+        
+        if not self.testAdmin(msg.frm, chan):
+            return
+        
+        if not chan.enabled:
+            self.send(msg.frm, "Failed: Voting is disabled")
+            return
+        
+        if disable or delay < 0:
+            if self.resetCountdown(chan):
+                self.send(room, "----- Countdown timer has been disabled")
+            else:
+                self.send(msg.frm, "Countdown timer was not running")
+            return
+        
+        if delay == 0:
+            self.setCountdown(chan, delay)
+            #self.resetCountdown(chan)
+            #chan.enabled = False
+            
+            #self.send(room, "----- Countdown timer: Voting has been DISABLED")
+            #self.printResults(room, chan)
+            return
+        
+        # regular case, delay > 0
+        delayMins = math.floor(delay / 60)
+        delaySecs = delay % 60
+        delayStr = ""
+        
+        if delayMins > 0:
+            delayStr = " " + str(delayMins) + "min"
+        if delaySecs > 0:
+            delayStr = delayStr + " " + str(delaySecs) + "sec"
+        
+        if self.setCountdown(chan, delay):
+            self.send(room, "----- Countdown timer has been enabled. Voting will end in" + delayStr)
+        else:
+            self.send(room, "----- Countdown timer has been changed. Voting will end in" + delayStr)
+    
+    
+    def startPoller(self):
+        if not self.polling:
+            self.start_poller(1, self.pollCallback)
+        
+        self.polling = True
+    
+    
+    def stopPoller(self):
+        if self.polling:
+            self.stop_poller(self.pollCallback)
+        
+        self.polling = False
+    
+    
+    # chan: ChanInfo, timeout: integer -> bool
+    def setCountdown(self, chan, timeout):
+        now = time.time()
+        chan.countdownTS = now + timeout
+        
+        result = False
+        
+        if chan not in self.cbChan:
+            self.cbChan.append(chan)
+            
+            result = True
+            
+        self.startPoller()
+        
+        return result
+    
+    
+    # chan: ChanInfo -> bool
+    def resetCountdown(self, chan):
+        if chan not in self.cbChan:
+            return False
+        
+        self.cbChan = [ c for c in self.cbChan if c != chan ]
+        
+        chan.countdownTS = -1
+        
+        if len(self.cbChan) == 0:
+            self.stopPoller()
+        
+        return True
+
+    
+    def pollCallback(self):
+        now = time.time()
+        
+        for chan in self.cbChan:
+            self.countdownProcessPoll(chan, int(round(chan.countdownTS - now)))
+        
+        # cleanup ...
+        # ...timed-out channels
+        self.cbChan = [ c for c in self.cbChan if c.countdownTS >= 0 ]
+        # ... and poller itself
+        if len(self.cbChan) == 0:
+            self.stopPoller()
+
+
+    # chan: ChanInfo, remaining: integer
+    def countdownProcessPoll(self, chan, remaining):
+        room = chan.channel
+        
+        if remaining <= 0:
+            # time over
+            chan.countdownTS = -1
+            chan.enabled = False
+            
+            self.send(room, "----- Countdown expired: Voting has been DISABLED")
+            self.printResults(room, chan)
+        elif remaining <= 5:
+            self.send(room, "----- Countdown: " + str(remaining) + "sec remaining. Time is running out!")
+        elif remaining <  3*10:
+            # 10s steps
+            if remaining % 10 == 0:
+                self.send(room, "----- Countdown: " + str(remaining) + "sec remaining. Hurry up!")
+        elif remaining <= 3*15:
+            # 15s steps
+            if remaining % 15 == 0:
+                self.send(room, "----- Countdown: " + str(remaining) + "sec remaining. We are getting closer ...")
+        elif remaining <= 3*30:
+            # 30s steps
+            if remaining % 30 == 0:
+                self.send(room, "----- Countdown: " + str(remaining) + "sec remaining.")
+        elif remaining <= 3*60:
+            # 1m steps
+            if remaining % 60 == 0:
+                self.send(room, "----- Countdown: " + str(int(remaining / 60)) + "min remaining.")
+        else:
+            # 5m steps
+            if remaining % (5*60) == 0:
+                self.send(room, "----- Countdown: " + str(int(remaining / 60)) + "min remaining.")
+
 
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
     def reset(self, msg, channel):
@@ -441,6 +600,7 @@ class Titlebot(BotPlugin):
         if not self.testAdmin(msg.frm, chan):
             return
         
+        self.resetCountdown(chan)
         chan.reset()
         
         self.send(room, "----- All votes have been reset -----")
@@ -566,7 +726,13 @@ class Titlebot(BotPlugin):
             out.append("  ----- userVotes end -----")
             out.append("  enabled: " + str(info.enabled))
             out.append("----------")
-            
+        
+        out.append("----- callback polling chans -----")
+        out.append("  polling: " + str(self.polling))
+        for info in self.cbChan:
+            out.append("  name: " + str(info.channel))
+            out.append("----------")
+        
         out.append("----- config -----")
         ccfg = self.tryLoadCfg()
         for cfg in ccfg:
@@ -735,6 +901,8 @@ class Titlebot(BotPlugin):
         """
         super(Titlebot, self).activate()
         
+        self.resetState()
+        
         for room in self.rooms():
             self.tryAddRoom(room)
 
@@ -743,9 +911,10 @@ class Titlebot(BotPlugin):
         """
         Triggers on plugin deactivation
         """
-        super(Titlebot, self).deactivate()
         
-        self.chans = [ ]
+        self.stopPoller()
+        
+        super(Titlebot, self).deactivate()
 
 
     def callback_connect(self):
