@@ -50,22 +50,27 @@ class ChanInfo:
     # options       list of VotingOption
     # userVotes     list of UserVote
     # enabled       boolean
-    # countdownTS   integer/float
+    # countdownTS   float
+    # countdownVal  integer
 
     def __init__(self, chan, adminList):
         self.channel = chan
         self.admins = adminList
         self.options = [ ]
         self.userVotes = [ ]
-        self.enabled = False
-        self.countdownTS = -1
+        self.reset()
 
 
     def reset(self):
         self.options.clear()
         self.userVotes.clear()
         self.enabled = False
+        self.resetCountdown()
+
+
+    def resetCountdown(self):
         self.countdownTS = -1
+        self.countdownVal = -1;
 
 
     # user: Person
@@ -510,6 +515,7 @@ class Titlebot(BotPlugin):
     def setCountdown(self, chan, timeout):
         now = time.time()
         chan.countdownTS = now + timeout
+        chan.countdownVal = timeout
         
         result = False
         
@@ -530,7 +536,7 @@ class Titlebot(BotPlugin):
         
         self.cbChan = [ c for c in self.cbChan if c != chan ]
         
-        chan.countdownTS = -1
+        chan.resetCountdown()
         
         if len(self.cbChan) == 0:
             self.stopPoller()
@@ -542,7 +548,11 @@ class Titlebot(BotPlugin):
         now = time.time()
         
         for chan in self.cbChan:
-            self.countdownProcessPoll(chan, int(round(chan.countdownTS - now)))
+            remaining = int(round(chan.countdownTS - now))
+            # ensure no time step is skipped
+            while chan.countdownVal > remaining:
+                chan.countdownVal -= 1
+                self.countdownProcessPoll(chan, chan.countdownVal)
         
         # cleanup ...
         # ...timed-out channels
@@ -558,7 +568,7 @@ class Titlebot(BotPlugin):
         
         if remaining <= 0:
             # time over
-            chan.countdownTS = -1
+            chan.resetCountdown()
             chan.enabled = False
             
             self.send(room, "----- Countdown expired: Voting has been DISABLED")
