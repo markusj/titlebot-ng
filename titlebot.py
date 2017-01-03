@@ -781,6 +781,7 @@ class Titlebot(BotPlugin):
                 
                 return None
     
+    
     # -> list of ChanConfig
     def tryLoadCfg(self):
         try:
@@ -790,9 +791,12 @@ class Titlebot(BotPlugin):
     
     
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
-    @arg_botcmd('op', metavar='operation', type=str, choices=['add', 'del'], help='operations: add, del')
-    def tb_channel(self, msg, channel, op):
-        """ Configures titlebot to offer/not offer its service in a channel (owner-only command)"""
+    @arg_botcmd('-o', '--oldname', type=str, help='old channel name, required for operation "mv"')
+    @arg_botcmd('op', metavar='operation', type=str, choices=['add', 'rm', 'mv'], help='operations: add, rm, mv')
+    def tb_channel(self, msg, channel, oldname, op):
+        """ Configures titlebot to offer/not offer its service in a channel. (owner-only command)"""
+        #Note: errbot does not update Slack channel names until it is restarted
+        #thus, "mv" to update the configuration of a renamed channel requires a restart
         
         if not self.testOwner(msg):
             return
@@ -802,8 +806,13 @@ class Titlebot(BotPlugin):
         
         if op == "add":
             self.doAddChannel(msg, channel)
-        else:
+        elif op == "rm":
             self.doRemoveChannel(msg, channel)
+        elif op == "mv":
+            self.doMoveChannel(msg, channel, oldname)
+        else:
+            self.send(msg.frm, "error: unknown operation. please refer to help for further advice.")
+    
     
     # msg: Message, channel: String
     def doAddChannel(self, msg, channel):
@@ -852,9 +861,41 @@ class Titlebot(BotPlugin):
             self.send(room, "titlebot service is no longer available in this channel, all options and votes are lost.")
     
     
+    # msg: Message, channel: String, oldname: String
+    def doMoveChannel(self, msg, channel, oldname):
+        room = self.inferAdminChannel(msg, channel)
+        
+        if room is None:
+            return
+        
+        for chan in self.chans:
+            if chan.channel == room:
+                self.send(msg.frm, "Channel is already configured")
+                
+                return
+        
+        ccfg = self.tryLoadCfg()
+        
+        admins = [ cfg.admins for cfg in ccfg if cfg.channel == oldname ]
+        ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != oldname ]
+        
+        if len(admins) == 1:
+            chan = ChanInfo(room, admins[0])
+            self.chans.append(chan)
+            ccfg.append(chan.exportConfig())
+            
+            self['ccfg'] = ccfg
+            
+            self.send(room, "titlebot was migrated from channel " + oldname + " to this channel by " + str(msg.frm.person))
+        
+            return
+        
+        self.send(msg.frm, "error: a channel named " + oldname + " has not been configured previously")
+    
+    
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
     @arg_botcmd('lAdmins', metavar='admins', nargs='+', type=str, help='a list of admins')
-    @arg_botcmd('op', metavar='operation', type=str, choices=['add', 'del'], help='operations: add, del')
+    @arg_botcmd('op', metavar='operation', type=str, choices=['add', 'rm'], help='operations: add, rm')
     def tb_admin(self, msg, channel, lAdmins, op):
         """ Adds/removes users from the bot administrator list (owner-only command)"""
         
@@ -873,6 +914,11 @@ class Titlebot(BotPlugin):
         
         if chan is None:
             return        
+        
+        if op != "add" and op != "rm":
+            self.send(msg.frm, "error: unknown operation. please refer to help for further advice.")
+            
+            return
         
         for admin in lAdmins:
             if op == "add":
