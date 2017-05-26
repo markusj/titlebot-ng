@@ -564,6 +564,9 @@ class Titlebot(BotPlugin):
 
     # chan: ChanInfo, remaining: integer
     def countdownProcessPoll(self, chan, remaining):
+        if chan not in self.chans:
+            return # got removed in between
+    
         room = chan.channel
         
         if remaining <= 0:

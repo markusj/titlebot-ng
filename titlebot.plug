@@ -1,6 +1,6 @@
 [Core]
 module = titlebot
-name = titlebot
+name = Titlebot
 
 [Documentation]
 description = I help you to do open polls (target platform is slack but should work for others, too)
@@ -9,4 +9,5 @@ description = I help you to do open polls (target platform is slack but should w
 version = 3
 
 [Errbot]
+min = 5.0.1
 
