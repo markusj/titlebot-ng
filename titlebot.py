@@ -6,9 +6,6 @@ import math
 import time
 
 
-log = logging.getLogger(__name__)
-
-
 
 class VotingOption:
     # id            int
