@@ -1,10 +1,18 @@
 from errbot import BotPlugin, botcmd, arg_botcmd, webhook
 from errbot.backends.base import RoomDoesNotExistError, UserDoesNotExistError
 
+from queue import Queue
+from threading import Thread
+
 import logging
 import math
+import requests;
 import time
 
+try:
+    import emoji
+except ImportError:
+    pass # optional, not required
 
 
 class VotingOption:
@@ -34,34 +42,47 @@ class UserVote:
 class ChanConfig:
     # channel       string
     # admins        list of string
+    # apiKey        string
 
-    def __init__(self, room, admins):
+    def __init__(self, room, admins, key):
         self.channel = str(room)
         self.admins = admins[:]
+        self.apiKey = key
 
 
 
 class ChanInfo:
     # channel       Room
     # admins        list of string
+    # apiKey        string
     # options       list of VotingOption
     # userVotes     list of UserVote
     # enabled       boolean
     # countdownTS   float
     # countdownVal  integer
+    # streamQueue   Queue
+    # streamWorker  WebsiteForwardWorker
 
-    def __init__(self, chan, adminList):
+    def __init__(self, chan, adminList, key):
         self.channel = chan
         self.admins = adminList
+        self.apiKey = key
+        
         self.options = [ ]
         self.userVotes = [ ]
+        
+        self.streamQueue = None
+        self.streamWorker = None
+        
         self.reset()
 
 
     def reset(self):
         self.options.clear()
         self.userVotes.clear()
+        
         self.enabled = False
+        
         self.resetCountdown()
 
 
@@ -155,7 +176,51 @@ class ChanInfo:
     
     # -> ChanConfig
     def exportConfig(self):
-        return ChanConfig(self.channel, self.admins)
+        return ChanConfig(self.channel, self.admins, self.apiKey)
+    
+    
+    # log: Logger
+    def setupSlackStreaming(self, log):
+        if self.apiKey is None:
+            return # do not start logger
+            
+        if self.streamQueue is None:
+            self.streamQueue = Queue()
+            self.streamWorker = WebsiteForwardWorker(self.streamQueue, log, self.apiKey)
+            
+            self.streamWorker.daemon = True
+            self.streamWorker.start()
+        else:
+            log.warning("HSLive Slack Streaming for Channel " + str(self.channel) + " was already set up")
+    
+    
+    def stopSlackStreaming(self):
+        if not self.streamQueue is None:
+            self.streamQueue.put(None) # signals the worker to terminate
+            
+            self.streamQueue = None
+            self.streamWorker = None
+    
+    
+    # log: Logger, key: String
+    def changeStreamingAPIKey(self, log, key):
+        self.apiKey = key
+        
+        # change worker key
+        if self.streamWorker is not None:
+            if key is not None:
+                self.streamWorker.key = key
+            else:
+                self.stopSlackStreaming()
+        else:
+            if key is not None:
+                self.setupSlackStreaming(log)
+    
+    # msg: Message
+    def streamMsg(self, msg):
+        if self.apiKey is not None:
+            self.streamQueue.put(msg)
+        # else: discard silently
 
 
 
@@ -174,10 +239,16 @@ class Titlebot(BotPlugin):
     def __init__(self, bot, name):
         super().__init__(bot, name)
         
+        self.chans = [ ]
+        self.cbChan = [ ]
+        
         self.resetState()
     
     
     def resetState(self):
+        for chan in self.chans:
+            self.tryDisableRoom(chan.channel)
+        
         self.chans = [ ]
         self.cbChan = [ ]
         self.polling = False
@@ -715,6 +786,7 @@ class Titlebot(BotPlugin):
         # chans             list of ChanInfo
         for info in self.chans:
             out.append("  name: " + str(info.channel))
+            out.append("  API key: " + str(info.apiKey))
             out.append("  ----- admins begin -----")
             # admins        list of string
             for admin in info.admins:
@@ -747,6 +819,7 @@ class Titlebot(BotPlugin):
         ccfg = self.tryLoadCfg()
         for cfg in ccfg:
             out.append("  name: " + cfg.channel)
+            out.append("  API key: " + str(info.apiKey))
             out.append("  ----- admins begin -----")
             # admins        list of string
             for admin in cfg.admins:
@@ -836,7 +909,7 @@ class Titlebot(BotPlugin):
                 
                 return
         
-        chan = ChanInfo(room, [])
+        chan = ChanInfo(room, [], None)
         self.chans.append(chan)
         ccfg.append(chan.exportConfig())
         
@@ -856,7 +929,8 @@ class Titlebot(BotPlugin):
         for chan in self.chans:
             if channel == str(chan.channel):
                 room = chan.channel
-        self.chans[:] = [ chan for chan in self.chans if channel != str(chan.channel) ]
+        
+        self.tryDisableRoom(room)
         
         if room is not None:
             self.send(room, "titlebot service is no longer available in this channel, all options and votes are lost.")
@@ -877,21 +951,20 @@ class Titlebot(BotPlugin):
         
         ccfg = self.tryLoadCfg()
         
-        admins = [ cfg.admins for cfg in ccfg if cfg.channel == oldname ]
+        chan_cfg = [ cfg for cfg in ccfg if cfg.channel == oldname ]
         ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != oldname ]
         
-        if len(admins) == 1:
-            chan = ChanInfo(room, admins[0])
-            self.chans.append(chan)
+        if len(chan_cfg) == 1:
+            chan = ChanInfo(room, chan_cfg[0].admins, chan_cfg[apiKey]) # safe, because channel was unconfigured before
             ccfg.append(chan.exportConfig())
             
             self['ccfg'] = ccfg
             
+            self.tryAddRoom(room) # join officially and setup internal state
+            
             self.send(room, "titlebot was migrated from channel " + oldname + " to this channel by " + str(msg.frm.person))
-        
-            return
-        
-        self.send(msg.frm, "error: a channel named " + oldname + " has not been configured previously")
+        else:
+            self.send(msg.frm, "error: a channel named " + oldname + " has not been configured previously")
     
     
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
@@ -933,7 +1006,34 @@ class Titlebot(BotPlugin):
         self['ccfg'] = ccfg
         
         self.send(msg.frm, "admins configured")
+    
+    
+    @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
+    @arg_botcmd('key', nargs='?', type=str, help='HSLive Slack Streaming API-Key, a sequence of characters and numbers')
+    def tb_apikey(self, msg, channel, key):
+        """ Configures the HSLive Slack Streaming API-Key (owner-only command) """
+        if not self.testAdminChannel(msg, channel):
+            return
+            
+        room = self.inferAdminChannel(msg, channel)
         
+        if room is None:
+            return
+        
+        chan = self.lookupChanInfo(msg, room)
+        
+        if chan is None:
+            return        
+        
+        chan.changeStreamingAPIKey(self.log, key)
+        
+        ccfg = self.tryLoadCfg()
+        ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != str(room) ]
+        ccfg.append(chan.exportConfig())
+        self['ccfg'] = ccfg
+        
+        self.send(msg.frm, "HSLive Slack Stream API Key configured")
+    
     
     # room: Room
     def tryAddRoom(self, room):
@@ -944,11 +1044,31 @@ class Titlebot(BotPlugin):
         candidate = [ cfg for cfg in ccfg if cfg.channel == str(room) ]
         
         if len(candidate) > 0:
-            self.chans.append(ChanInfo(room, candidate[0].admins))
+            try:
+                admins = candidate[0].admins
+            except AttributeError:
+                admins = []
+            
+            try:
+                apiKey = candidate[0].apiKey
+            except AttributeError:
+                apiKey = None
+            
+            chan = ChanInfo(room, admins, apiKey)
+            
+            self.chans.append(chan)
+            
+            chan.setupSlackStreaming(self.log)
         else:
             self.log.info("ignored unconfigured room " + str(room))
+    
+    
+    def tryDisableRoom(self, room):
+        for chan in self.chans:
+            if room == chan.channel:
+                chan.stopSlackStreaming()
         
-        return
+        self.chans[:] = [ chan for chan in self.chans if room != chan.channel ]
     
     
     def activate(self):
@@ -969,6 +1089,9 @@ class Titlebot(BotPlugin):
         """
         
         self.stopPoller()
+        
+        for chan in self.chans:
+            self.tryDisableRoom(chan.channel)
         
         super(Titlebot, self).deactivate()
 
@@ -1001,6 +1124,90 @@ class Titlebot(BotPlugin):
                 representing the room that was left.
         """
         
-        self.chans[:] = [ chan for chan in self.chans if room != chan.channel ]
+        self.tryDisableRoom(room)
+        
         self.log.info("left room " + str(room))
+    
+    def callback_message(self, msg):
+        """
+            Triggered on every message not coming from the bot itself.
+
+            Override this method to get notified on *ANY* message.
+
+            :param message:
+                representing the message that was received.
+        """
+        
+        if msg.is_direct:
+            self.log.info("filtering direct msg")
+            return
+        
+        # find channel
+        for chan in self.chans:
+            if chan.channel == msg.to:
+                # filter out bot commands
+                if not msg.body.lstrip().startswith(self.bot_config.BOT_PREFIX):
+                    chan.streamMsg(msg)
+
+
+class WebsiteForwardWorker(Thread):
+    """
+    Forward messages to the HappyShooting Live Website
+    """
+    
+    # queue     Queue of Message
+    # log       Logger
+    # key       HSLive API Key
+    
+    def __init__(self, queue, log, key):
+        Thread.__init__(self)
+        
+        self.queue = queue
+        self.log = log
+        self.key = key
+
+    def run(self):
+        while True:
+            # Get the work from the queue and expand the tuple
+            msg = self.queue.get()
+            
+            payload = { 'secret' : self.key }
+            
+            try:
+                # msg.extras['url'] # maybe later. supported since errbot 5.0
+                
+                tsStruct = self.extractTimestamp(msg)
+                
+                payload['time'] = str(tsStruct.tm_hour) + ':' + str(tsStruct.tm_min)
+                payload['nick'] = str(msg.frm.person)[1:]
+                
+                try:
+                    payload['post'] = emoji.emojize(msg.body, use_aliases=True)
+                except NameError:
+                    payload['post'] = msg.body # no emoji support, continue without
+                
+                try:
+                    if self.key is not None: # simply discard if no key has been configured
+                        r = requests.post('https://happyshooting.de/live/add_line.php', data=payload, timeout=0.5);
+                        self.log.debug("request sent " + r.url + " -> " + str(r))
+                    else:
+                        self.log.debug("no key, discarding")
+                except requests.exceptions.RequestException as e:
+                    self.log.exception("failed to forward message to HSLive Slack Stream")
+            except Exception as e:
+                self.log.exception("something went wrong")
+            
+            self.queue.task_done()
+    
+    # msg: Message -> time.struct_time
+    def extractTimestamp(self, msg):
+        # Slack timestamp format: unix-time with fraction (.), stored as string
+        
+        try:
+            tsStr = msg.extras['slack_event']['message']['ts']
+        except KeyError:
+            tsStr = msg.extras['slack_event']['ts']
+        
+        return time.localtime(float(tsStr))
+
 
