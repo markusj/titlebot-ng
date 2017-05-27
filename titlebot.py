@@ -173,8 +173,9 @@ class Titlebot(BotPlugin):
     # cbChan        list of ChanInfo
     # polling       bool
     
-    def __init__(self, bot):
-        super().__init__(bot)
+    
+    def __init__(self, bot, name):
+        super().__init__(bot, name)
         
         self.resetState()
     
