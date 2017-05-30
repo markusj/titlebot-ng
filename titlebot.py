@@ -1178,7 +1178,7 @@ class WebsiteForwardWorker(Thread):
                 
                 tsStruct = self.extractTimestamp(msg)
                 
-                payload['time'] = str(tsStruct.tm_hour) + ':' + str(tsStruct.tm_min)
+                payload['time'] = '{:02d}:{:02d}'.format(tsStruct.tm_hour, tsStruct.tm_min)
                 payload['nick'] = str(msg.frm.person)[1:]
                 
                 try:
