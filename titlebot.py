@@ -1174,6 +1174,9 @@ class WebsiteForwardWorker(Thread):
             payload = { 'secret' : self.key }
             
             try:
+                if self.filterMsg(msg):
+                    continue
+                
                 # msg.extras['url'] # maybe later. supported since errbot 5.0
                 
                 tsStruct = self.extractTimestamp(msg)
@@ -1198,6 +1201,21 @@ class WebsiteForwardWorker(Thread):
                 self.log.exception("something went wrong")
             
             self.queue.task_done()
+    
+    # msg: Message -> bool
+    def filterMsg(self, msg):
+        slackEvent = msg.extras['slack_event']
+        msgType = slackEvent.get('type', None)
+        
+        if not msgType == 'message':
+            return True
+        
+        msgSubType = slackEvent.get('subtype', None)
+        
+        if msgSubType is None or msgSubType in ("me_message", "message_replied", "reply_broadcast"):
+            return False
+        
+        return True
     
     # msg: Message -> time.struct_time
     def extractTimestamp(self, msg):
