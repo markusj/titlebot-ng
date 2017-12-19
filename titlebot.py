@@ -625,7 +625,7 @@ class Titlebot(BotPlugin):
         
         # cleanup ...
         # ...timed-out channels
-        self.cbChan = [ c for c in self.cbChan if c.countdownTS >= 0 ]
+        self.cbChan = [ c for c in self.cbChan if (c.countdownTS - now) >= 0 ]
         # ... and poller itself
         if len(self.cbChan) == 0:
             self.stopPoller()
@@ -638,7 +638,7 @@ class Titlebot(BotPlugin):
     
         room = chan.channel
         
-        if remaining <= 0:
+        if remaining in [0, -1]: # tolerate rounding errors
             # time over
             chan.resetCountdown()
             chan.enabled = False
