@@ -520,7 +520,7 @@ class Titlebot(BotPlugin):
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
     @arg_botcmd('--disable', '-d', action='store_true', help='disables a running countdown')
     @arg_botcmd('--list', '-l', dest='doList', action='store_true', help='lists all vote options before the countdown starts')
-    @arg_botcmd('delay', nargs='?', type=int, default='60', help='countdown delay (in seconds). Negative values have the same effect as --disable. A value of zero ends the voting immediately. default=60sec')
+    @arg_botcmd('delay', nargs='?', type=int, default='120', help='countdown delay (in seconds). Negative values have the same effect as --disable. A value of zero ends the voting immediately. default=60sec')
     def countdown(self, msg, channel, disable, doList, delay):
         """start/stop a countdown to end the voting. Might be called again to change the counter value (admin only command)"""
         
