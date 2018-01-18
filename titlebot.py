@@ -819,7 +819,7 @@ class Titlebot(BotPlugin):
         ccfg = self.tryLoadCfg()
         for cfg in ccfg:
             out.append("  name: " + cfg.channel)
-            out.append("  API key: " + str(info.apiKey))
+            out.append("  API key: " + str(cfg.apiKey))
             out.append("  ----- admins begin -----")
             # admins        list of string
             for admin in cfg.admins:
