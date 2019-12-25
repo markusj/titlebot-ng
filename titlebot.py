@@ -359,8 +359,9 @@ class Titlebot(BotPlugin):
 
 
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
+    @arg_botcmd('--quiet', '-q', '--silent', '-s', action='store_true', help='do not reply to confirm a successful vote')
     @arg_botcmd('option', metavar='option_id', type=int, help='the option number you want to vote for')
-    def vote(self, msg, channel, option):
+    def vote(self, msg, channel, quiet, option):
         """vote for option <option_id>"""
         
         try:
@@ -376,7 +377,8 @@ class Titlebot(BotPlugin):
         result = chan.vote(msg.frm, option - 1)
         
         if result == option - 1:
-            self.send(msg.frm, "Vote for option " + str(option) + " accepted")
+            if not quiet:
+                self.send(msg.frm, "Vote for option " + str(option) + " accepted")
         elif result == -1:
             self.send(msg.frm, "Failed: There is no such option. Maybe it has been deleted?")
         else:
@@ -1104,6 +1106,7 @@ class Titlebot(BotPlugin):
         for room in self.rooms():
             self.tryAddRoom(room)
 
+
     def callback_room_joined(self, room):
         """
             Triggered when the bot has joined a MUC.
@@ -1115,6 +1118,7 @@ class Titlebot(BotPlugin):
         
         self.tryAddRoom(room)
         
+
     def callback_room_left(self, room):
         """
             Triggered when the bot has left a MUC.
@@ -1127,7 +1131,8 @@ class Titlebot(BotPlugin):
         self.tryDisableRoom(room)
         
         self.log.info("left room " + str(room))
-    
+
+
     def callback_message(self, msg):
         """
             Triggered on every message not coming from the bot itself.
