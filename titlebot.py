@@ -297,7 +297,7 @@ class Titlebot(BotPlugin):
                 return False
         else: # test if user occupies the requested channel
             for room in self.rooms():
-                if channel == str(room) and len([ occupant for occupant in room.occupants if msg.frm == occupant ]) > 0:
+                if channel == str(room) and len([ occupant for occupant in room.occupants if str(msg.frm) == occupant.person ]) > 0:
                     return True
             
             self.badArgs(msg, "i do only accept commands from users in my channels")
@@ -310,7 +310,7 @@ class Titlebot(BotPlugin):
     # msg: Message, channel: String -> Room
     def inferChannel(self, msg, channel):
         if channel is not None:
-            return lookupChannel(msg, channel)
+            return self.lookupChannel(msg, channel)
         elif not msg.is_direct:
             return msg.to
         else: # direct message and only one configured channel
@@ -344,10 +344,15 @@ class Titlebot(BotPlugin):
 
     # msg: Message, channel: String -> (room, ChanInfo)
     def parseParams(self, msg, channel):
-        if not self.testChannel(msg, channel):
+        if channel is not None:
+            chanStr = '#' + channel
+        else:
+            chanStr = None
+        
+        if not self.testChannel(msg, chanStr):
             raise ValueError()
         
-        room = self.inferChannel(msg, channel)   
+        room = self.inferChannel(msg, chanStr)
         if room is None:
             raise ValueError()
                  
