@@ -29,6 +29,16 @@ class VotingOption:
 
 
 
+class PersistedVote:
+    # user          String
+    # option        Index for ChanInfo.options (or ChanConfig.options)
+    
+    def __init__(self, userVote):
+        self.user = str(userVote.user.person)
+        self.option = userVote.option
+
+
+
 class UserVote:
     # user          Person
     # option        Index for ChanInfo.options
@@ -43,11 +53,17 @@ class ChanConfig:
     # channel       string
     # admins        list of string
     # apiKey        string
+    # options       list of VotingOption
+    # userVotes     list of PersistetVote
+    # enabled       boolean
 
-    def __init__(self, room, admins, key):
+    def __init__(self, room, admins, key, options, votes, enabled):
         self.channel = str(room)
         self.admins = admins[:]
         self.apiKey = key
+        self.options = options[:]
+        self.userVotes = [ PersistedVote(vote) for vote in votes ]
+        self.enabled = enabled
 
 
 
@@ -103,6 +119,7 @@ class ChanInfo:
                 return vote
         
         return None
+
 
     # user: Person, option: int -> int ( >= 0: ACK, -1: No such option, <-1: -oldVote - 2)
     def vote(self, user, option):
@@ -176,7 +193,7 @@ class ChanInfo:
     
     # -> ChanConfig
     def exportConfig(self):
-        return ChanConfig(self.channel, self.admins, self.apiKey)
+        return ChanConfig(self.channel, self.admins, self.apiKey, self.options, self.userVotes, self.enabled)
     
     
     # log: Logger
@@ -228,7 +245,7 @@ class Titlebot(BotPlugin):
     """
     I help you to do open polls
     
-    Hint: The argument <channel> in commands is only required if you send the command as query/direct message.
+    Hint: The argument <channel> in commands is only rqequired if you send the command as query/direct message.
     """
     
     # chans         list of ChanInfo
@@ -382,6 +399,8 @@ class Titlebot(BotPlugin):
         result = chan.vote(msg.frm, option - 1)
         
         if result == option - 1:
+            self.updateChanConfig(chan)
+            
             if not quiet:
                 self.send(msg.frm, "Vote for option " + str(option) + " accepted")
         elif result == -1:
@@ -426,6 +445,8 @@ class Titlebot(BotPlugin):
         result = chan.revoke(person)
         
         if result >= 0:
+            self.updateChanConfig(chan)
+            
             self.send(msgTo, "----- Vote by user " + str(person.person) + " for option " + str(result + 1) + " has been revoked")
         else:
             self.send(msg.frm, "Failed: No vote to revoke for user " + str(person.person))
@@ -450,6 +471,8 @@ class Titlebot(BotPlugin):
         result = chan.addOption(option)
         
         if result >= 0:
+            self.updateChanConfig(chan)
+            
             self.send(room, "----- Option " + str(result + 1) + " added: " + option)
         else:
             self.send(msg.frm, "----- Failed to add option")
@@ -473,6 +496,8 @@ class Titlebot(BotPlugin):
         out = [ ]
         
         if revoked is not None:
+            self.updateChanConfig(chan)
+            
             for user in revoked:
                 out.append("----- Vote by user " + str(user.person) + " for option " + str(option) + " has been revoked -----")
                 
@@ -496,6 +521,8 @@ class Titlebot(BotPlugin):
             return
             
         if not chan.enabled:
+            self.updateChanConfig(chan)
+            
             self.send(room, "----- Voting has been ENABLED! -----")
         else:
             self.send(msg.frm, "Voting was already " + "enabled" if chan.enabled else "disabled")
@@ -516,6 +543,8 @@ class Titlebot(BotPlugin):
             return
         
         if chan.enabled:
+            self.updateChanConfig(chan)
+            
             self.send(room, "----- Voting has been DISABLED! -----")
             self.resetCountdown(chan)
         else:
@@ -650,6 +679,8 @@ class Titlebot(BotPlugin):
             chan.resetCountdown()
             chan.enabled = False
             
+            self.updateChanConfig(chan)
+            
             self.send(room, "----- Countdown expired: Voting has been DISABLED")
             self.printResults(room, chan)
         elif remaining <= 5:
@@ -690,6 +721,8 @@ class Titlebot(BotPlugin):
         
         self.resetCountdown(chan)
         chan.reset()
+        
+        self.updateChanConfig(chan)
         
         self.send(room, "----- All votes have been reset -----")
 
@@ -832,6 +865,21 @@ class Titlebot(BotPlugin):
             for admin in cfg.admins:
                 out.append("    admin: " + admin)
             out.append("  ----- admins end -----")
+            # options       list of VotingOption
+            for option in cfg.options:
+                out.append("    id: " + str(option.id))
+                out.append("    text: " + option.text)
+                out.append("    votes: " + str(option.votes))
+                out.append("    deleted: " + str(option.deleted))
+                out.append("    ----------")
+            out.append("  ----- options end -----")
+            out.append("  ----- userVotes begin -----")
+            # userVotes     list of PersistedVote
+            for userVote in cfg.userVotes:
+                out.append("    " + userVote.user + " -> " + str(userVote.option))
+            out.append("  ----- userVotes end -----")
+            out.append("  enabled: " + str(cfg.enabled))
+            out.append("----------")
         
         out.append("----- dump end -----")
         
@@ -869,6 +917,16 @@ class Titlebot(BotPlugin):
             return self['ccfg']
         except:
             return [ ]
+    
+    
+    
+    # chan: ChanInfo
+    def updateChanConfig(self, chan):
+        ccfg = self.tryLoadCfg()
+        ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != str(chan.channel) ]
+        ccfg.append(chan.exportConfig())
+        self['ccfg'] = ccfg
+    
     
     
     @arg_botcmd('-c', '--channel', type=str, help='required if you send the command as query/direct message')
@@ -1007,10 +1065,7 @@ class Titlebot(BotPlugin):
             else:
                 chan.delAdmin(admin)
         
-        ccfg = self.tryLoadCfg()
-        ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != str(room) ]
-        ccfg.append(chan.exportConfig())
-        self['ccfg'] = ccfg
+        self.updateChanConfig(chan)
         
         self.send(msg.frm, "admins configured")
     
@@ -1034,10 +1089,7 @@ class Titlebot(BotPlugin):
         
         chan.changeStreamingAPIKey(self.log, key)
         
-        ccfg = self.tryLoadCfg()
-        ccfg[:] = [ cfg for cfg in ccfg if cfg.channel != str(room) ]
-        ccfg.append(chan.exportConfig())
-        self['ccfg'] = ccfg
+        self.updateChanConfig(chan)
         
         self.send(msg.frm, "HSLive Slack Stream API Key configured")
     
@@ -1061,9 +1113,35 @@ class Titlebot(BotPlugin):
             except AttributeError:
                 apiKey = None
             
+            try:
+                enabled = candidate[0].enabled
+                options = candidate[0].options
+                persistedVotes = candidate[0].userVotes 
+                userVotes = []
+                
+                for pVote in persistedVotes:
+                    occupants = [ occupant for occupant in room.occupants if pVote.user == str(occupant.person) ]
+                    
+                    if len(occupants) > 0:
+                        userVotes.append(UserVote(occupants[0], pVote.option))
+                    else:
+                        options[pVote.option].votes -= 1
+                        
+                        self.log.info("unable to find user " + pVote.user + " dropping vote for option " + str(pVote.option))
+            except AttributeError:
+                enabled = False
+                options = []
+                userVotes = []
+            
             chan = ChanInfo(room, admins, apiKey)
+            chan.enabled = enabled
+            chan.options = options
+            chan.userVotes = userVotes
             
             self.chans.append(chan)
+            
+            if enabled:
+                self.send(room, "Oops, titlebot reconnected/restarted during running poll. Options and votes have been restored. Voting is ENABLED again.")
             
             chan.setupSlackStreaming(self.log)
         else:
