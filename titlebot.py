@@ -1292,7 +1292,11 @@ class WebsiteForwardWorker(Thread):
     
     # msg: Message -> bool
     def filterMsg(self, msg):
-        slackEvent = msg.extras['slack_event']
+        try:
+            slackEvent = msg.extras['slack_event']
+        except AttributeError:
+            return True
+        
         msgType = slackEvent.get('type', None)
         
         if not msgType == 'message':
